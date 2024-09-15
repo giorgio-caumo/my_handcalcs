@@ -6,7 +6,7 @@ from sympy.parsing.sympy_parser import parse_expr
 
 # Initialize pint UnitRegistry
 ureg = pint.UnitRegistry(auto_reduce_dimensions=True)
-ureg.default_format = '~P'  # Simplifies the units (e.g. N·m instead of newton·meter)
+ureg.formatter.default_format = '~P'  # Simplifies the units (e.g. N·m instead of newton·meter)
 
 # Define some common units for convenience
 mm = ureg.millimeter
@@ -18,22 +18,22 @@ kg = ureg.kilogram
 m = ureg.m
 s = ureg.second
 mT = ureg.tonne
+deg = ureg.degree  # Adding degrees
 
 # Helper function to convert units where necessary (e.g. N/mm² -> MPa)
 def auto_convert_units(quantity):
-    if quantity.check('[force] / [length] ** 2'):
-        if quantity.to(MPa).magnitude >= 1:
-            return quantity.to(MPa)
-        else:
-            return quantity.to(Pa)            
-    elif quantity.check('[mass] * [length] / [time] ** 2'):
-        if quantity.to(kN).magnitude >= 1:
-            return quantity.to(kN)
-        else:
-            return quantity.to(N)
-    
-    else:
-        return quantity
+    if isinstance(quantity, ureg.Quantity):  # Only try to convert if it's a pint Quantity
+        if quantity.check('[force] / [length] ** 2'):
+            if quantity.to(MPa).magnitude >= 1:
+                return quantity.to(MPa)
+            else:
+                return quantity.to(Pa)            
+        elif quantity.check('[mass] * [length] / [time] ** 2'):
+            if quantity.to(kN).magnitude >= 1:
+                return quantity.to(kN)
+            else:
+                return quantity.to(N)
+    return quantity
 
 # Helper function to reduce exponent size in LaTeX output
 def format_exponents(expr):
@@ -128,8 +128,12 @@ def render(line, cell):
             # Convert variable to LaTeX
             var_latex = latex(symbols(var))
 
-            # Parse the expression symbolically for LaTeX display (this ensures we show the symbolic expression)
-            expr_latex = latex(parse_expr(expr))
+            # Skip SymPy parsing for unit-related expressions
+            if any(unit in expr for unit in ['degree', 'deg', 'mm', 'kN', 'MPa', 'Pa', 'N']):
+                expr_latex = expr  # Use the raw expression if units are involved
+            else:
+                expr_latex = latex(parse_expr(expr))  # Otherwise, parse symbolically with SymPy
+            
 
             # Build the LaTeX for the substituted expression
             substituted_expr_latex = build_substituted_latex(expr, global_namespace)
@@ -149,7 +153,7 @@ def render(line, cell):
             elif mode == 'long':  # long mode: variable = expression and then result on a new line
                 rendered_line = f'\\text{{{left_comment}}} & {var_latex} & = {expr_latex} & \\text{{{right_comment}}}\\\\'
                 rendered_line += f' & & = {substituted_expr_latex} \\\\'  # Substitution step
-                rendered_line += f' & & = {result_latex} \\\\'
+                rendered_line += f' & & = {result_latex} \\\\'  # Final result
             else:  # standard mode: variable = expression = result (both symbolic and numerical)
                 rendered_line = f'\\text{{{left_comment}}} & {var_latex} & = {expr_latex} & = {result_latex} & \\text{{{right_comment}}}\\\\'
 
@@ -160,11 +164,11 @@ def render(line, cell):
                 expr_latex = latex(parsed_expr) if not isinstance(parsed_expr, ureg.Quantity) else f"{parsed_expr.magnitude} \\, {parsed_expr.units}"
             except Exception as e:
                 expr_latex = f"Error: {e}"
-            rendered_line = f'\\text{{{left_comment}}} & {expr_latex} \\\\'
+            rendered_line = f'\\text{{{left_comment}}} & {expr_latex} \\\\'  # Render without assignment
 
         rendered_lines.append(rendered_line)
 
     # Create the LaTeX table with increased vertical spacing
-    table_latex = '\\begin{array}{lllll}\n' + '\n'.join(rendered_lines) + '\n\\end{array}'
+    table_latex = '$\\begin{array}{lllll}\n' + '\n'.join(rendered_lines) + '\n\\end{array}$'
     table_latex = table_latex.replace('\\\\', '\\\\[2ex]')  # Increase vertical spacing
     display(Latex(table_latex))
