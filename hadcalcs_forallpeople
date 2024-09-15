@@ -1,0 +1,236 @@
+from IPython.core.magic import register_cell_magic
+from IPython.display import display, Latex
+import re
+
+class LatexConversion:
+    def __init__(self, expr):
+        self.expr = expr
+    
+    def handle_superscripts(self):
+        self.expr = re.sub(r'\*\*\(([^)]+)\)', r'^{\1}', self.expr)
+        self.expr = re.sub(r'\*\*([0-9]+\.?[0-9]*)', r'^{\1}', self.expr)
+        self.expr = re.sub(r'\*\*([a-zA-Z_]\w*)', r'^{\1}', self.expr)
+        return self
+    
+    def latex_frac(self):
+        def find_numerator(parts, index):
+            stack = []
+            numerator = []
+            while index >= 0:
+                part = parts[index]
+                if part == ')':
+                    stack.append(part)
+                elif part == '(':
+                    if stack:
+                        stack.pop()
+                    else:
+                        numerator.insert(0, part)
+                        break
+                if not stack and re.match(r'[\+\-\*/]', part):
+                    break
+                numerator.insert(0, part)
+                index -= 1
+            return ''.join(numerator).strip(), index
+
+        def find_denominator(parts, index):
+            stack = []
+            denominator = []
+            while index < len(parts):
+                part = parts[index]
+                if part == '(':
+                    stack.append(part)
+                elif part == ')':
+                    if stack:
+                        stack.pop()
+                    else:
+                        denominator.append(part)
+                        break
+                if not stack and re.match(r'[\+\-\*/]', part):
+                    break
+                denominator.append(part)
+                index += 1
+            return ''.join(denominator).strip(), index
+
+        parts = re.split(r'([+\-*/()])', self.expr)
+        index = 0
+        while index < len(parts):
+            if parts[index] == '/':
+                numerator, num_index = find_numerator(parts, index - 1)
+                denominator, den_index = find_denominator(parts, index + 1)
+                fraction = f'\\dfrac{{{numerator}}}{{{denominator}}}'
+                parts = parts[:num_index + 1] + [fraction] + parts[den_index:]
+                index = num_index + 1
+            index += 1
+        self.expr = ''.join(parts)
+        return self
+    
+    def latex_mult(self):
+        self.expr = self.expr.replace('*', '\\cdot ')
+        return self
+
+    def fix_subscripts(self):
+        parts = re.split(r'([_\W])', self.expr)
+        res = ""
+        i = 0
+
+        while i < len(parts):
+            part = parts[i]
+            if part == '_':
+                i += 1
+                if i < len(parts) and re.match(r'\w+', parts[i]):
+                    subscript = parts[i]
+                    res += f"_{{{subscript}}}"
+            else:
+                res += part
+            i += 1
+        
+        res = re.sub(r'([a-zA-Z_]\w*)_({\w+})_({\w+})', r'\1_{\2_\3}', res)
+        self.expr = res
+        return self
+
+    def latex_sqrt(self):
+        self.expr = re.sub(r'sqrt\(([^)]+)\)', r'\\sqrt{\1}', self.expr)
+        return self
+
+    def latex_greek(self):
+        greek_letters = {
+            'alpha': 'alpha', 'beta': 'beta', 'gamma': 'gamma', 'delta': 'delta',
+            'epsilon': 'epsilon', 'zeta': 'zeta', 'eta': 'eta', 'theta': 'theta',
+            'iota': 'iota', 'kappa': 'kappa', 'lambda': 'lambda', 'mu': 'mu',
+            'nu': 'nu', 'xi': 'xi', 'omicron': 'omicron', 'pi': 'pi', 'rho': 'rho',
+            'sigma': 'sigma', 'tau': 'tau', 'upsilon': 'upsilon', 'phi': 'phi',
+            'chi': 'chi', 'psi': 'psi', 'omega': 'omega'
+        }
+        for key, value in greek_letters.items():
+            self.expr = re.sub(rf'(?<!\\)\b{key}\b', rf'\\{value}', self.expr)
+            self.expr = re.sub(rf'(?<!\\)\b{key}_', rf'\\{value}_', self.expr)
+        return self
+    
+    def convert(self):
+        self.handle_superscripts()
+        self.latex_frac()
+        self.latex_mult()
+        self.fix_subscripts()
+        self.latex_sqrt()
+        self.latex_greek()
+        return self.expr
+
+@register_cell_magic
+def render(line, cell):
+    # Read the decimal places argument and mode
+    args = line.strip().split()
+    decimal_places = int(args[0]) if args and args[0].isdigit() else None
+    mode = args[1] if len(args) > 1 else 'default'
+
+    lines = cell.strip().split('\n')
+    rendered_lines = []
+    global_namespace = globals()
+
+    # Function to find variables in an expression
+    def find_variables(expr):
+        return re.findall(r'\b[a-zA-Z_][a-zA-Z0-9_]*(?:_[a-zA-Z0-9]+)?\b', expr)
+
+    # Function to substitute variables with their values
+    def substitute_values(expr, var_value_pairs):
+        for var, value in var_value_pairs:
+            expr = re.sub(rf'\b{re.escape(var)}\b', f'{value}', expr)
+        return expr
+
+    for line in lines:
+        # Split the line into code and comment
+        if '#' in line:
+            code, comment = line.split('#', 1)
+            comment = comment.strip()
+            code = code.strip()
+
+
+                
+
+
+
+            
+            if '=' in code:
+                # Format the code and evaluate the expression
+                var, expr = code.split('=', 1)
+                var = var.strip()
+                expr = expr.strip()
+                expr_for_eval = expr.replace('\\cdot', '*')  # Replace \cdot with * for evaluation
+                result = eval(expr_for_eval, global_namespace)
+                global_namespace[var] = result
+
+                # Identify variables in the expression
+                variables = find_variables(expr)
+                
+                # Format the result with the specified number of decimal places
+                if decimal_places is not None:
+                    result = f"{result:.{decimal_places}f}"
+                
+                # Apply LaTeX formatting to the expression and variable name
+                converter = LatexConversion(expr)
+                expr = converter.convert()
+                converter = LatexConversion(var)
+                var = converter.convert()
+                
+                if mode == 'input':
+                    code = f"{var} = {expr}"
+                    rendered_line = f'\\text{{{comment}}} & {code} \\\\'
+                elif mode == 'long':
+                    var_value_pairs = [(v, global_namespace[v]) for v in variables]
+                    # Perform substitution
+                    substituted_expr = substitute_values(expr, var_value_pairs)
+                    # code = f"{var} = {expr} \\\\ \n = {substituted_expr} \\\\ \n = {result}"
+                    rendered_line = f'\\text{{{comment}}} & = {expr} \\\\  & = {substituted_expr} \\\\  & = {result}\\\\'
+                else:
+                    code = f"{var} = {expr} = {result}"
+                    rendered_line = f'\\text{{{comment}}} & {code} \\\\'
+            else:
+                converter = LatexConversion(code)
+                code = converter.convert()
+        else:
+            comment = ""
+            code = line.strip()
+            if '=' in code:
+                var, expr = code.split('=', 1)
+                var = var.strip()
+                expr = expr.strip()
+                expr_for_eval = expr.replace('\\cdot', '*')  # Replace \cdot with * for evaluation
+                result = eval(expr_for_eval, global_namespace)
+                global_namespace[var] = result
+
+                # Identify variables in the expression
+                variables = find_variables(expr)
+                
+                # Format the result with the specified number of decimal places
+                if decimal_places is not None:
+                    result = f"{result:.{decimal_places}f}"
+                
+                # Apply LaTeX formatting to the expression and variable name
+                converter = LatexConversion(expr)
+                expr = converter.convert()
+                converter = LatexConversion(var)
+                var = converter.convert()
+                
+                if mode == 'input':
+                    code = f"{var} = {expr}"
+                    rendered_line = f'\\text{{{comment}}} & {code} \\\\'
+                elif mode == 'long':
+                    var_value_pairs = [(v, global_namespace[v]) for v in variables]
+                    # Perform substitution
+                    substituted_expr = substitute_values(expr, var_value_pairs)
+                    # code = f"{var} = {expr} \\\\ \n = {substituted_expr} \\\\ \n = {result}"
+                    rendered_line = f'\\text{{{comment}}} & = {expr} \\\\  & = {substituted_expr} \\\\  & = {result}\\\\'
+                else:
+                    code = f"{var} = {expr} = {result}"
+                    rendered_line = f'\\text{{{comment}}} & {code} \\\\'
+            else:
+                converter = LatexConversion(code)
+                code = converter.convert()
+
+        # rendered_line = f'\\text{{{comment}}} & {code} \\\\'
+        rendered_lines.append(rendered_line)
+
+    # Create the LaTeX table with increased vertical spacing
+    table_latex = '\[ \\begin{array}{llll}\n' + '\n'.join(rendered_lines) + '\n\\end{array} \]'
+    table_latex = table_latex.replace('\\\\', '\\\\[2ex]')  # Increase vertical spacing
+    # Display the LaTeX table
+    display(Latex(table_latex))
