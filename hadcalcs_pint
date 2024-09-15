@@ -1,0 +1,170 @@
+import pint
+from IPython.core.magic import register_cell_magic
+from IPython.display import display, Latex
+from sympy import symbols, latex
+from sympy.parsing.sympy_parser import parse_expr
+
+# Initialize pint UnitRegistry
+ureg = pint.UnitRegistry(auto_reduce_dimensions=True)
+ureg.default_format = '~P'  # Simplifies the units (e.g. N·m instead of newton·meter)
+
+# Define some common units for convenience
+mm = ureg.millimeter
+kN = ureg.kilonewton
+MPa = ureg.megapascal
+Pa = ureg.pascal
+N = ureg.newton
+kg = ureg.kilogram
+m = ureg.m
+s = ureg.second
+mT = ureg.tonne
+
+# Helper function to convert units where necessary (e.g. N/mm² -> MPa)
+def auto_convert_units(quantity):
+    if quantity.check('[force] / [length] ** 2'):
+        if quantity.to(MPa).magnitude >= 1:
+            return quantity.to(MPa)
+        else:
+            return quantity.to(Pa)            
+    elif quantity.check('[mass] * [length] / [time] ** 2'):
+        if quantity.to(kN).magnitude >= 1:
+            return quantity.to(kN)
+        else:
+            return quantity.to(N)
+    
+    else:
+        return quantity
+
+# Helper function to reduce exponent size in LaTeX output
+def format_exponents(expr):
+    return expr.replace('e', '\\cdot 10^')
+
+# Format the result to avoid scientific notation and display plain numbers
+def format_number(value, decimal_places):
+    if isinstance(value, ureg.Quantity):
+        magnitude = value.magnitude
+        units = value.units
+    else:
+        magnitude = value
+        units = ""
+    
+    # Format the magnitude to avoid scientific notation
+    formatted_magnitude = f"{magnitude:.{decimal_places}f}".rstrip('0').rstrip('.') if decimal_places else f"{magnitude:g}"
+    return f"{formatted_magnitude} {units}".strip()
+
+# Helper function to build LaTeX for substituted expression
+def build_substituted_latex(expr, namespace):
+    """Takes the expression and replaces the variables with their numerical values for LaTeX rendering."""
+    substituted_expr_latex = expr
+    for var in namespace:
+        if isinstance(namespace[var], ureg.Quantity):
+            # Extract magnitude and units
+            magnitude = namespace[var].magnitude
+            units = namespace[var].units
+            # Replace variable with value and units in LaTeX form
+            substituted_expr_latex = substituted_expr_latex.replace(var, f"{magnitude:.3g} \\, {units}")
+        elif isinstance(namespace[var], (int, float)):
+            substituted_expr_latex = substituted_expr_latex.replace(var, f"{namespace[var]:.3g}")
+    return substituted_expr_latex
+
+@register_cell_magic
+def render(line, cell):
+    # Default to 0 decimal places if none specified
+    args = line.strip().split()
+    decimal_places = int(args[0]) if args and args[0].isdigit() else 0
+
+    lines = cell.strip().split('\n')
+    rendered_lines = []
+    global_namespace = globals()
+
+    for line in lines:
+        # Identify comment style and split
+        if '#' in line:
+            code, comment = line.split('#', 1)
+            comment = comment.strip()
+            code = code.strip()
+
+            # Determine mode based on comment type
+            if comment.startswith('*'):
+                mode = 'input'
+                comment = comment[1:].strip()
+            elif comment.startswith('+'):
+                mode = 'long'
+                comment = comment[1:].strip()
+            else:
+                mode = 'standard'
+                
+            if '@' in comment:
+                left_comment, right_comment = comment.split('@', 1)
+                left_comment = left_comment.strip()
+                right_comment = right_comment.strip()
+            else:
+                left_comment, right_comment = comment, ""
+        else:
+            code = line.strip()
+            left_comment = ''
+            right_comment = ''
+            mode = 'standard'
+
+        if '=' in code:
+            # Split the code into variable and expression
+            var, expr = code.split('=', 1)
+            var = var.strip()
+            expr = expr.strip()
+
+            # Try to evaluate the expression within pint's context
+            try:
+                parsed_expr = eval(expr, global_namespace)  # Parse expression with pint
+                result = parsed_expr  # Result is already in pint Quantity form
+
+                # Automatically convert units where appropriate
+                result = auto_convert_units(result)
+            except Exception as e:
+                raise ValueError(f"Error parsing expression: {expr}") from e
+
+            # Store the result in the global namespace for future use
+            global_namespace[var] = result
+
+            # Convert variable to LaTeX
+            var_latex = latex(symbols(var))
+
+            # Parse the expression symbolically for LaTeX display (this ensures we show the symbolic expression)
+            expr_latex = latex(parse_expr(expr))
+
+            # Build the LaTeX for the substituted expression
+            substituted_expr_latex = build_substituted_latex(expr, global_namespace)
+
+            # Show the result in original units (with automatic unit handling)
+            if isinstance(result, ureg.Quantity):
+                result_latex = f"{result.magnitude:.{decimal_places}g} \\, {result.units}"
+            else:
+                result_latex = f"{result:.{decimal_places}g}" if decimal_places is not None else str(result)
+
+            # Format exponents in the result
+            result_latex = format_number(result, decimal_places)
+
+            # Handle different modes based on the comment
+            if mode == 'input':  # input mode: variable = expression
+                rendered_line = f'\\text{{{left_comment}}} & {var_latex} & = {result_latex} & \\text{{{right_comment}}}\\\\'
+            elif mode == 'long':  # long mode: variable = expression and then result on a new line
+                rendered_line = f'\\text{{{left_comment}}} & {var_latex} & = {expr_latex} & \\text{{{right_comment}}}\\\\'
+                rendered_line += f' & & = {substituted_expr_latex} \\\\'  # Substitution step
+                rendered_line += f' & & = {result_latex} \\\\'
+            else:  # standard mode: variable = expression = result (both symbolic and numerical)
+                rendered_line = f'\\text{{{left_comment}}} & {var_latex} & = {expr_latex} & = {result_latex} & \\text{{{right_comment}}}\\\\'
+
+        else:
+            # If no assignment, just process the comment and code as-is
+            try:
+                parsed_expr = eval(code, global_namespace)
+                expr_latex = latex(parsed_expr) if not isinstance(parsed_expr, ureg.Quantity) else f"{parsed_expr.magnitude} \\, {parsed_expr.units}"
+            except Exception as e:
+                expr_latex = f"Error: {e}"
+            rendered_line = f'\\text{{{left_comment}}} & {expr_latex} \\\\'
+
+        rendered_lines.append(rendered_line)
+
+    # Create the LaTeX table with increased vertical spacing
+    table_latex = '\\begin{array}{lllll}\n' + '\n'.join(rendered_lines) + '\n\\end{array}'
+    table_latex = table_latex.replace('\\\\', '\\\\[2ex]')  # Increase vertical spacing
+    display(Latex(table_latex))
